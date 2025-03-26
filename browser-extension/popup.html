@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scratch编辑器操作记录器</title>
+  <link rel="stylesheet" href="css/popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Scratch编辑器操作记录器</h1>
+    </header>
+    
+    <div class="status-panel">
+      <div class="status-indicator">
+        <span class="status-dot" id="status-dot"></span>
+        <span class="status-text" id="status-text">未录制</span>
+      </div>
+      <div class="timer" id="timer">00:00</div>
+    </div>
+    
+    <div class="button-group">
+      <button id="startBtn" class="btn btn-primary">
+        <span class="icon">▶</span>
+        开始录制
+      </button>
+      <button id="stopBtn" class="btn btn-danger" disabled>
+        <span class="icon">■</span>
+        停止录制
+      </button>
+    </div>
+    
+    <div class="stats-panel">
+      <div class="stat-item">
+        <span class="stat-label">已记录操作:</span>
+        <span class="stat-value" id="operation-count">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">最后操作:</span>
+        <span class="stat-value" id="last-operation">无</span>
+      </div>
+    </div>
+    
+    <div class="settings-panel">
+      <h2>设置</h2>
+      <div class="setting-group">
+        <input type="checkbox" id="auto-start" class="setting-checkbox">
+        <label for="auto-start">打开编辑器时自动开始录制</label>
+      </div>
+      <div class="setting-group">
+        <input type="checkbox" id="save-to-file" class="setting-checkbox" checked>
+        <label for="save-to-file">保存录制数据到文件</label>
+      </div>
+      <div class="setting-group">
+        <input type="checkbox" id="sync-with-app" class="setting-checkbox" checked>
+        <label for="sync-with-app">与主应用同步数据</label>
+      </div>
+    </div>
+    
+    <div class="action-panel">
+      <button id="exportBtn" class="btn btn-secondary">
+        <span class="icon">↓</span>
+        导出最近录制
+      </button>
+      <button id="clearBtn" class="btn btn-secondary">
+        <span class="icon">✕</span>
+        清除数据
+      </button>
+    </div>
+    
+    <footer>
+      <span class="version">版本 1.0</span>
+      <a href="https://github.com/leetzeyew/scratch-editor" target="_blank" class="help-link">帮助</a>
+    </footer>
+  </div>
+  
+  <script src="js/popup.js"></script>
+</body>
+</html> 

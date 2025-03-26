@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Scratch编辑器操作记录器",
+  "version": "1.0",
+  "description": "记录用户在Scratch编辑器中的交互操作",
+  "permissions": ["activeTab", "storage", "tabs"],
+  "host_permissions": ["*://leetzeyew.github.io/*", "*://*/*"],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://leetzeyew.github.io/scratch-editor*",
+        "file://*/test-page.html",
+        "*://*/*/test-page.html"
+      ],
+      "js": ["js/contentScript.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "js/background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["test-page.html", "js/*", "css/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+} 
