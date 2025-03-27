@@ -21,6 +21,9 @@ interface EditorOperation {
   command?: string;
   code?: string;
   timestamp: number;
+  field?: string;
+  newValue?: string;
+  blockType?: string;
 }
 
 export default function CoursePage({ params }: { params: { id: string } }) {
@@ -38,6 +41,8 @@ export default function CoursePage({ params }: { params: { id: string } }) {
   const [showSyncIndicator, setShowSyncIndicator] = useState(false);
   const [syncIndicatorMessage, setSyncIndicatorMessage] = useState('');
   const [isEditorLoading, setIsEditorLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [operations, setOperations] = useState<EditorOperation[]>([]);
   
   // 操作回放相关状态
   const [operationLog, setOperationLog] = useState<EditorOperation[]>([]);
@@ -206,12 +211,30 @@ export default function CoursePage({ params }: { params: { id: string } }) {
         
         console.log(`执行操作: ${operation.type} ${operation.command || ''} 在 ${currentTime}秒`);
         
-        // 根据编辑器类型执行相应操作
+        // 根据操作类型执行相应命令
         if (operation.type === 'move' && operation.blockId && operation.position) {
           // 移动积木操作
           sendScratchCommand('moveBlock', JSON.stringify({
             blockId: operation.blockId,
             position: operation.position
+          }));
+        } else if (operation.type === 'create') {
+          // 创建积木操作
+          sendScratchCommand('createBlock', JSON.stringify({
+            blockType: operation.blockId,
+            position: operation.position
+          }));
+        } else if (operation.type === 'change') {
+          // 修改积木属性操作
+          sendScratchCommand('setField', JSON.stringify({
+            blockId: operation.blockId,
+            field: operation.field,
+            value: operation.newValue
+          }));
+        } else if (operation.type === 'delete') {
+          // 删除积木操作
+          sendScratchCommand('deleteBlock', JSON.stringify({
+            blockId: operation.blockId
           }));
         } else if (operation.command) {
           // 执行命令操作
@@ -295,6 +318,82 @@ export default function CoursePage({ params }: { params: { id: string } }) {
     setComment('');
   };
   
+  // 添加导入操作的处理函数
+  const handleImportOperations = (operations: any[]) => {
+    console.log('导入操作记录:', operations);
+    
+    // 按时间戳排序操作
+    operations.sort((a, b) => a.timestamp - b.timestamp);
+    
+    // 重置当前时间
+    setCurrentTime(0);
+    
+    // 清空现有操作记录
+    setOperationLog([]);
+    setExecutedOperations(new Set());
+    
+    // 添加导入的操作到操作记录
+    setOperationLog(operations);
+    
+    // 通知Scratch编辑器重置
+    if (scratchIframeRef.current?.contentWindow) {
+      scratchIframeRef.current.contentWindow.postMessage({
+        type: 'command',
+        command: 'reset'
+      }, '*');
+    }
+    
+    // 开始播放
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      videoRef.current.play();
+    }
+  };
+
+  // 添加导入文本的处理函数
+  const handleImportText = (content: string) => {
+    console.log('导入文本内容:', content);
+    
+    // 解析文本内容中的操作
+    const lines = content.split('\n');
+    const operations: EditorOperation[] = [];
+    
+    lines.forEach(line => {
+      if (line.trim() && !line.startsWith('//')) {
+        // 解析操作行
+        const match = line.match(/(\w+)\((.*)\)/);
+        if (match) {
+          const [_, command, params] = match;
+          const args = params.split(',').map(arg => arg.trim().replace(/['"]/g, ''));
+          
+          const operation: EditorOperation = {
+            type: command,
+            timestamp: parseFloat(args[args.length - 1]) || 0,
+            blockId: args[0],
+            command: command,
+            code: line
+          };
+          
+          // 根据命令类型添加额外属性
+          if (command === 'moveBlock') {
+            operation.position = {
+              x: parseFloat(args[1]),
+              y: parseFloat(args[2])
+            };
+          } else if (command === 'changeBlock') {
+            operation.command = 'setField';
+            operation.code = `setField('${args[0]}', '${args[1]}', '${args[2]}')`;
+          }
+          
+          operations.push(operation);
+        }
+      }
+    });
+    
+    // 处理解析出的操作
+    handleImportOperations(operations);
+  };
+  
   return (
     <main className="min-h-screen flex flex-col bg-gray-50">
       <Header />
@@ -352,6 +451,42 @@ export default function CoursePage({ params }: { params: { id: string } }) {
                 <div className="p-4">
                   {activeTab === 'content' && (
                     <div>
+                      {/* 添加导入代码按钮 */}
+                      <div className="flex justify-end mb-4">
+                        <label className="px-4 py-2 bg-[var(--scratch-blue)] text-white rounded-md hover:bg-blue-600 cursor-pointer flex items-center">
+                          <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                          </svg>
+                          导入代码
+                          <input
+                            type="file"
+                            accept=".txt,.json"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                const reader = new FileReader();
+                                reader.onload = (event) => {
+                                  const content = event.target?.result as string;
+                                  try {
+                                    // 尝试解析为JSON
+                                    const jsonData = JSON.parse(content);
+                                    if (jsonData.operations) {
+                                      // 处理JSON格式的操作记录
+                                      handleImportOperations(jsonData.operations);
+                                    }
+                                  } catch {
+                                    // 如果不是JSON，则作为文本处理
+                                    handleImportText(content);
+                                  }
+                                };
+                                reader.readAsText(file);
+                              }
+                            }}
+                          />
+                        </label>
+                      </div>
+                      
                       <div className="mb-4">
                         <div className="relative">
                           <video 

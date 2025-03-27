@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Header from '../../../components/Header';
 import Footer from '../../../components/Footer';
 import BackToTop from '../../../components/BackToTop';
+import JSZip from 'jszip';
 
 // 定义RecordRTC类型
 declare global {
@@ -27,6 +28,9 @@ interface EditorOperation {
   command?: string;
   code?: string;
   timestamp: number;
+  field?: string;
+  newValue?: string;
+  blockType?: string;
 }
 
 export default function RecordCoursePage() {
@@ -44,7 +48,7 @@ export default function RecordCoursePage() {
   const [isSnapReady, setIsSnapReady] = useState(false);
   const [isScratchReady, setIsScratchReady] = useState(false);
   const [lastExecutedTime, setLastExecutedTime] = useState(-1);
-  const [activeEditor, setActiveEditor] = useState<'snap' | 'scratch'>('snap');
+  const [activeEditor, setActiveEditor] = useState<'scratch'>('scratch');
   const [isEditorLoading, setIsEditorLoading] = useState(true);
   
   // 添加操作记录相关状态
@@ -59,6 +63,9 @@ export default function RecordCoursePage() {
   const [isScreenShareSupported, setIsScreenShareSupported] = useState(true);
   const [isMicrophoneEnabled, setIsMicrophoneEnabled] = useState(true);
   const [isScreenRecording, setIsScreenRecording] = useState(false);
+  
+  // 添加新的状态变量
+  const [showDownloadButton, setShowDownloadButton] = useState(false);
   
   // 模拟的操作数据
   const actions: Action[] = [
@@ -107,28 +114,18 @@ export default function RecordCoursePage() {
     loadRecordRTC();
   }, []);
   
+  // 检查JSZip是否正确加载
+  useEffect(() => {
+    if (typeof JSZip === 'undefined') {
+      console.error('JSZip未正确加载');
+      setRecordingError('文件压缩功能未正确加载，请刷新页面重试');
+    }
+  }, []);
+  
   // 处理编辑器加载完成
   const handleEditorLoad = () => {
     setIsEditorLoading(false);
   };
-  
-  // 监听Snap!编辑器加载完成
-  useEffect(() => {
-    const iframe = snapIframeRef.current;
-    if (iframe) {
-      const handleMessage = (event: MessageEvent) => {
-        // 实际使用时应检查消息来源和格式
-        if (event.data === 'snap-ready') {
-          setIsSnapReady(true);
-          console.log('Snap! 编辑器已准备就绪');
-          handleEditorLoad();
-        }
-      };
-      
-      window.addEventListener('message', handleMessage);
-      return () => window.removeEventListener('message', handleMessage);
-    }
-  }, []);
   
   // 监听Scratch编辑器加载完成并设置双向通信
   useEffect(() => {
@@ -155,21 +152,25 @@ export default function RecordCoursePage() {
       // 监听Scratch编辑器的消息
       const handleScratchMessage = (event: MessageEvent) => {
         if (iframe.contentWindow === event.source) {
-          console.log('收到Scratch消息:', event.data);
+          console.log('收到Scratch消息:', {
+            type: event.data.type,
+            details: event.data.details,
+            timestamp: new Date().toISOString(),
+            isRecording: isRecording,
+            currentOperations: operations.length
+          });
           
-          // 处理用户操作
           if (event.data.type === 'userAction') {
             const operation = event.data.details;
-            
-            // 将操作添加到记录中，使用recordingTime作为时间戳
             if (isRecording) {
               const newOperation: EditorOperation = {
                 ...operation,
                 timestamp: recordingTime
               };
-              
+              console.log('添加新操作:', newOperation);
               setOperations(prevOps => [...prevOps, newOperation]);
-              console.log(`记录操作: ${operation.type} @ ${recordingTime}s`);
+            } else {
+              console.log('未记录操作：当前未在录制状态');
             }
           }
           
@@ -187,7 +188,7 @@ export default function RecordCoursePage() {
         window.removeEventListener('message', handleScratchMessage);
       };
     }
-  }, [isRecording, recordingTime]);
+  }, [isRecording, operations.length, recordingTime]);
   
   // 监听视频事件
   useEffect(() => {
@@ -217,14 +218,6 @@ export default function RecordCoursePage() {
       video.removeEventListener('timeupdate', handleTimeUpdate);
     };
   }, [isSyncing, lastExecutedTime, actions]);
-  
-  // 向Snap!编辑器发送命令
-  const sendSnapCommand = (command: string, code: string) => {
-    const iframe = snapIframeRef.current;
-    if (iframe && iframe.contentWindow) {
-      iframe.contentWindow.postMessage({ command, code }, '*');
-    }
-  };
   
   // 向Scratch编辑器发送命令 - 并记录操作
   const sendScratchCommand = (command: string, code: string) => {
@@ -398,18 +391,6 @@ export default function RecordCoursePage() {
     setOperations(prev => [...prev, newOperation]);
   };
   
-  // 手动发送Snap!命令
-  const handleSendSnapCommand = () => {
-    sendSnapCommand('run', 'move 10 steps');
-    recordAction('手动执行: move 10 steps', 'move 10 steps');
-  };
-  
-  // 重置Snap!编辑器
-  const handleResetSnap = () => {
-    sendSnapCommand('run', 'clear');
-    recordAction('重置编辑器', '');
-  };
-  
   // 保存操作记录
   const handleSaveOperations = () => {
     console.log(`保存前操作数量: ${operations.length}`);
@@ -420,23 +401,50 @@ export default function RecordCoursePage() {
       courseId: selectedCourse,
       recordedAt: new Date().toISOString(),
       duration: recordingTime > 0 ? recordingTime : Math.floor((Date.now() - recordingStartTime.current) / 1000),
-      operations: operations // 使用operations数组
+      operations: operations,
+      // 添加重放代码
+      replayCode: operations.map(op => {
+        switch (op.type) {
+          case 'create':
+            return op.blockType ? `createBlock('${op.blockType}', ${op.timestamp});` : '';
+          case 'move':
+            return op.position ? `moveBlock('${op.blockId}', ${op.position.x}, ${op.position.y}, ${op.timestamp});` : '';
+          case 'change':
+            return op.field && op.newValue ? `changeBlock('${op.blockId}', '${op.field}', '${op.newValue}', ${op.timestamp});` : '';
+          case 'delete':
+            return `deleteBlock('${op.blockId}', ${op.timestamp});`;
+          default:
+            return '';
+        }
+      }).filter(code => code !== '').join('\n')
     };
     
-    console.log("要保存的操作:", JSON.stringify(operationData, null, 2));
+    // 保存为JSON文件
+    const jsonBlob = new Blob([JSON.stringify(operationData, null, 2)], { type: 'application/json' });
+    const jsonUrl = URL.createObjectURL(jsonBlob);
+    const jsonLink = document.createElement('a');
+    jsonLink.href = jsonUrl;
+    jsonLink.download = `lesson-${selectedCourse}-${Date.now()}.json`;
+    document.body.appendChild(jsonLink);
+    jsonLink.click();
+    document.body.removeChild(jsonLink);
+    URL.revokeObjectURL(jsonUrl);
     
-    // 创建Blob并提供下载
-    const blob = new Blob([JSON.stringify(operationData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `lesson-${selectedCourse}-${Date.now()}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // 保存为可重放的代码文件
+    const codeBlob = new Blob([operationData.replayCode], { type: 'text/plain' });
+    const codeUrl = URL.createObjectURL(codeBlob);
+    const codeLink = document.createElement('a');
+    codeLink.href = codeUrl;
+    codeLink.download = `lesson-${selectedCourse}-${Date.now()}-replay.txt`;
+    document.body.appendChild(codeLink);
+    codeLink.click();
+    document.body.removeChild(codeLink);
+    URL.revokeObjectURL(codeUrl);
     
     console.log(`已保存${operations.length}个操作记录`);
+    
+    // 显示下载按钮
+    setShowDownloadButton(true);
   };
   
   // 将操作保存按钮添加到保存视频部分
@@ -460,28 +468,8 @@ export default function RecordCoursePage() {
     { id: '4', title: '新课程' }
   ];
   
-  // 切换编辑器
-  const toggleEditor = (editor: 'snap' | 'scratch') => {
-    setActiveEditor(editor);
-    setIsEditorLoading(true);
-    
-    // 如果切换到Snap!编辑器，重置同步状态
-    if (editor === 'snap') {
-      setLastExecutedTime(-1);
-    }
-    
-    // 记录切换操作
-    recordAction(`切换到 ${editor === 'snap' ? 'Snap!' : 'Scratch'} 编辑器`, '');
-  };
-  
   // 处理屏幕录制
   const startScreenRecording = async () => {
-    // 如果已经有录制器或流，不要重新获取权限
-    if (recorder || screenStream) {
-      console.log('屏幕录制已经在进行中');
-      return;
-    }
-    
     try {
       // 重置之前的错误
       setRecordingError(null);
@@ -492,59 +480,61 @@ export default function RecordCoursePage() {
         audio: false
       };
       
+      console.log('请求屏幕共享权限...');
+      const stream = await navigator.mediaDevices.getDisplayMedia(displayOptions);
+      console.log('获取到屏幕流');
+      
       // 获取音频流（如果用户允许）
       let audioStream: MediaStream | null = null;
       if (isMicrophoneEnabled) {
         try {
           audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          console.log('获取到音频流');
+          stream.addTrack(audioStream.getAudioTracks()[0]);
         } catch (error) {
           console.warn('无法获取麦克风权限:', error);
           recordAction('无法获取麦克风权限，将只录制屏幕无声音', '');
         }
       }
       
-      // 获取屏幕媒体流
-      const stream = await navigator.mediaDevices.getDisplayMedia(displayOptions);
-      
-      // 如果有音频流，合并到屏幕流中
-      if (audioStream && audioStream.getAudioTracks().length > 0) {
-        stream.addTrack(audioStream.getAudioTracks()[0]);
-      }
-      
       setScreenStream(stream);
       
       // 处理用户停止分享的情况
       stream.getVideoTracks()[0].onended = () => {
+        console.log('用户停止了屏幕共享');
         stopScreenRecording();
         recordAction('用户停止了屏幕共享', '');
       };
       
       // 创建RecordRTC实例
       if (window.RecordRTC) {
+        console.log('创建RecordRTC实例...');
         const options = {
           type: 'video',
           mimeType: 'video/webm;codecs=vp9',
-          bitsPerSecond: 128000 * 8, // 高质量视频
+          bitsPerSecond: 128000 * 8,
           recorderType: window.RecordRTC.MediaStreamRecorder,
-          disableLogs: true,
-          timeSlice: 1000, // 每秒保存一次
+          disableLogs: false,
+          timeSlice: 1000,
           checkForInactiveTracks: true,
-          // 获取每一秒的记录
           ondataavailable: (blob: Blob) => {
             console.log('新的录制数据可用', recordingTime);
-            // 这里可以实现实时上传或处理
           }
         };
         
         const newRecorder = new window.RecordRTC(stream, options);
-        setRecorder(newRecorder);
+        console.log('RecordRTC实例创建成功');
         
         // 开始录制
         newRecorder.startRecording();
+        console.log('开始录制');
+        
+        setRecorder(newRecorder);
         setIsScreenRecording(true);
         recordAction('开始屏幕录制', '');
         
       } else {
+        console.error('RecordRTC库未加载');
         setRecordingError('RecordRTC库尚未加载完成，请稍后再试');
         if (stream) {
           stream.getTracks().forEach(track => track.stop());
@@ -559,39 +549,45 @@ export default function RecordCoursePage() {
   };
   
   // 停止屏幕录制
-  const stopScreenRecording = () => {
-    if (recorder) {
+  const stopScreenRecording = async () => {
+    try {
+      if (!recorder) {
+        console.log('没有活动的录制器');
+        return;
+      }
+
+      console.log('正在停止录制...');
+      
+      // 停止录制器
       recorder.stopRecording(() => {
+        console.log('录制已停止');
         const blob = recorder.getBlob();
         setRecordedBlob(blob);
-        console.log('录制完成，视频大小:', Math.round(blob.size / 1024 / 1024) + 'MB');
-        recordAction(`录制完成，视频大小: ${Math.round(blob.size / 1024 / 1024)}MB`, '');
-        
-        // 预览录制的视频
-        if (videoRef.current) {
-          videoRef.current.srcObject = null;
-          videoRef.current.src = URL.createObjectURL(blob);
-          videoRef.current.muted = false;
-        }
-        
-        // 停止所有轨道
-        if (screenStream) {
-          screenStream.getTracks().forEach(track => track.stop());
-          setScreenStream(null);
-        }
+        setRecorder(null);
+        setIsScreenRecording(false);
+        setShowDownloadButton(true);
       });
-      
-      // 重置状态
-      setRecorder(null);
-      setIsScreenRecording(false);
-      
+
+      // 停止所有媒体流
+      if (screenStream) {
+        screenStream.getTracks().forEach(track => {
+          track.stop();
+          console.log('停止轨道:', track.kind);
+        });
+        setScreenStream(null);
+      }
+
       // 通知Scratch编辑器停止录制
-      const iframe = scratchIframeRef.current;
-      if (iframe && iframe.contentWindow) {
-        iframe.contentWindow.postMessage({
-          type: 'recordingStopped'
+      if (scratchIframeRef.current?.contentWindow) {
+        scratchIframeRef.current.contentWindow.postMessage({
+          type: 'recordingStopped',
+          timestamp: Date.now()
         }, '*');
       }
+      
+    } catch (error) {
+      console.error('停止录制失败:', error);
+      setRecordingError('停止录制失败，请重试');
     }
   };
   
@@ -612,21 +608,93 @@ export default function RecordCoursePage() {
     }
   };
   
-  // 修改activeEditor更改时的处理，确保在切换到Scratch时进行正确初始化
-  useEffect(() => {
-    // 当编辑器切换到Scratch时，发送初始化消息
-    if (activeEditor === 'scratch' && scratchIframeRef.current && scratchIframeRef.current.contentWindow) {
-      setTimeout(() => {
-        console.log('向Scratch编辑器发送初始化消息');
-        scratchIframeRef.current?.contentWindow?.postMessage({
-          type: 'init',
-          isRecording: isRecording,
-          enableTracking: true // 告诉Scratch编辑器启用操作跟踪
-        }, '*');
-      }, 1500); // 延迟发送，确保编辑器已加载
-    }
-  }, [activeEditor, isRecording]);
+  // 修改下载处理函数
+  const handleDownloadAll = () => {
+    console.log('开始下载处理...');
+    console.log('recordedBlob:', recordedBlob);
+    console.log('operations:', operations);
 
+    if (!recordedBlob) {
+      console.error('没有录制的视频');
+      alert('没有可下载的视频内容');
+      return;
+    }
+
+    if (!operations.length) {
+      console.error('没有操作记录');
+      alert('没有可下载的操作记录');
+      return;
+    }
+    
+    try {
+      console.log('创建ZIP文件...');
+      const zip = new JSZip();
+      
+      // 添加视频文件
+      console.log('添加视频文件...');
+      zip.file('recording.mp4', recordedBlob);
+      
+      // 创建操作记录的JSON数据
+      const jsonData = {
+        operations: operations,
+        timestamp: new Date().toISOString(),
+        duration: recordingTime
+      };
+      
+      // 添加JSON文件
+      console.log('添加JSON文件...');
+      zip.file('operations.json', JSON.stringify(jsonData, null, 2));
+      
+      // 创建重放代码文本
+      const replayCode = operations.map(op => {
+        switch (op.type) {
+          case 'create':
+            return op.blockType ? 
+              `createBlock('${op.blockType}', ${op.position?.x || 0}, ${op.position?.y || 0}, ${op.timestamp});` :
+              `createBlock('${op.blockType}', ${op.timestamp});`;
+          case 'move':
+            return op.blockId ? 
+              `moveBlock('${op.blockId}', ${op.position?.x || 0}, ${op.position?.y || 0}, ${op.timestamp});` :
+              `moveBlock('${op.blockId}', ${op.timestamp});`;
+          case 'change':
+            return op.blockId && op.field && op.newValue ? 
+              `changeBlock('${op.blockId}', '${op.field}', '${op.newValue}', ${op.timestamp});` : '';
+          case 'delete':
+            return op.blockId ? `deleteBlock('${op.blockId}', ${op.timestamp});` : '';
+          default:
+            return '';
+        }
+      }).filter(code => code !== '').join('\n');
+      
+      // 添加重放代码文件
+      console.log('添加重放代码文件...');
+      zip.file('replay.txt', replayCode);
+      
+      // 生成并下载ZIP文件
+      console.log('生成ZIP文件...');
+      zip.generateAsync({ type: 'blob' })
+        .then((content: Blob) => {
+          console.log('ZIP文件生成成功，开始下载...');
+          const url = URL.createObjectURL(content);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `scratch-recording-${new Date().toISOString().split('T')[0]}.zip`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+          console.log('下载完成');
+        })
+        .catch((error: Error) => {
+          console.error('生成ZIP文件失败:', error);
+          alert('下载文件失败，请重试');
+        });
+    } catch (error) {
+      console.error('下载处理失败:', error);
+      alert('下载处理失败，请重试');
+    }
+  };
+  
   // 修改录制状态更改时的处理，确保在开始/停止录制时通知Scratch编辑器
   useEffect(() => {
     if (activeEditor === 'scratch' && scratchIframeRef.current && scratchIframeRef.current.contentWindow) {
@@ -692,11 +760,31 @@ export default function RecordCoursePage() {
     };
   }, []);
   
+  // 添加调试信息显示函数
+  const showDebugInfo = () => {
+    console.log('当前录制状态:', {
+      isRecording,
+      recordingTime,
+      operationsCount: operations.length,
+      operations: operations
+    });
+  };
+
   return (
     <main className="min-h-screen flex flex-col bg-gray-50 dark:bg-gray-900">
       <Header />
       
       <div className="flex-1 container mx-auto p-4">
+        {/* 添加调试按钮 */}
+        <div className="flex items-center space-x-4 mb-4">
+          <button
+            onClick={showDebugInfo}
+            className="px-4 py-2 text-sm text-gray-600 border rounded hover:bg-gray-50"
+          >
+            显示调试信息
+          </button>
+        </div>
+        
         {/* 页面标题 */}
         <div className="flex items-center justify-between mb-6">
           <div>
@@ -741,129 +829,80 @@ export default function RecordCoursePage() {
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
           {/* 左侧控制面板 */}
           <div className="lg:col-span-1">
-            <div className="bg-white rounded-lg shadow-lg overflow-hidden mb-6 dark:bg-gray-800">
-              <div className="p-4 border-b dark:border-gray-700">
-                <h3 className="font-medium dark:text-white">录制控制</h3>
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 mb-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white">录制控制</h3>
+                {showDownloadButton && (
+                  <button
+                    onClick={handleDownloadAll}
+                    className="px-4 py-2 bg-[var(--scratch-green)] text-white rounded-md hover:bg-green-600 flex items-center"
+                  >
+                    <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    下载所有文件
+                  </button>
+                )}
               </div>
-              <div className="p-4">
-                {/* 录制按钮 */}
-                <div className="mb-4">
-                  {!isRecording ? (
-                    <button
-                      className="w-full flex items-center justify-center bg-[var(--scratch-red)] text-white py-3 px-4 rounded-md hover:bg-red-600 transition-colors"
-                      onClick={handleToggleRecording}
-                      disabled={!lessonTitle.trim() || (countdown !== null)}
-                    >
-                      <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                      </svg>
-                      开始录制
-                    </button>
-                  ) : (
-                    <button
-                      className="w-full flex items-center justify-center bg-gray-600 text-white py-3 px-4 rounded-md hover:bg-gray-700 transition-colors"
-                      onClick={handleToggleRecording}
-                    >
-                      <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
-                      </svg>
-                      停止录制
-                    </button>
-                  )}
-                  
-                  {countdown !== null && (
-                    <div className="mt-2 text-center">
-                      <span className="text-xl font-bold text-[var(--scratch-red)] dark:text-[var(--scratch-red)]">
-                        {countdown}
-                      </span>
-                    </div>
-                  )}
+              {/* 录制时间 */}
+              <div className="bg-gray-100 p-3 rounded-md mb-4 dark:bg-gray-700">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-700 text-sm dark:text-gray-300">录制时间:</span>
+                  <span className="font-mono text-[var(--scratch-blue)] font-bold">
+                    {formatTime(recordingTime)}
+                  </span>
                 </div>
+              </div>
 
-                {/* 录制时间 */}
-                <div className="bg-gray-100 p-3 rounded-md mb-4 dark:bg-gray-700">
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-700 text-sm dark:text-gray-300">录制时间:</span>
-                    <span className="font-mono text-[var(--scratch-blue)] font-bold">
-                      {formatTime(recordingTime)}
-                    </span>
-                  </div>
+              {/* 录制类型选择 */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2 dark:text-gray-300">录制选项</label>
+                
+                <div className="flex items-center mb-2">
+                  <input
+                    type="checkbox"
+                    id="enableMicrophone"
+                    checked={isMicrophoneEnabled}
+                    onChange={() => setIsMicrophoneEnabled(!isMicrophoneEnabled)}
+                    className="mr-2 h-4 w-4 text-[var(--scratch-blue)] focus:ring-[var(--scratch-blue)]"
+                  />
+                  <label htmlFor="enableMicrophone" className="text-sm text-gray-700 dark:text-gray-300">启用麦克风录制</label>
                 </div>
-
-                {/* 录制类型选择 */}
-                <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-2 dark:text-gray-300">编辑器选择</label>
-                  <div className="flex space-x-2">
-                    <button
-                      className={`px-4 py-2 text-sm rounded-md flex-1 ${activeEditor === 'snap' 
-                        ? 'bg-[var(--scratch-blue)] text-white' 
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}`}
-                      onClick={() => toggleEditor('snap')}
-                    >
-                      Snap!
-                    </button>
-                    <button
-                      className={`px-4 py-2 text-sm rounded-md flex-1 ${activeEditor === 'scratch' 
-                        ? 'bg-[var(--scratch-orange)] text-white' 
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}`}
-                      onClick={() => toggleEditor('scratch')}
-                    >
-                      Scratch
-                    </button>
-                  </div>
-                </div>
-
-                {/* 屏幕录制选项 */}
-                <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-2 dark:text-gray-300">录制选项</label>
-                  
-                  <div className="flex items-center mb-2">
-                    <input
-                      type="checkbox"
-                      id="enableMicrophone"
-                      checked={isMicrophoneEnabled}
-                      onChange={() => setIsMicrophoneEnabled(!isMicrophoneEnabled)}
-                      className="mr-2 h-4 w-4 text-[var(--scratch-blue)] focus:ring-[var(--scratch-blue)]"
-                    />
-                    <label htmlFor="enableMicrophone" className="text-sm text-gray-700 dark:text-gray-300">启用麦克风录制</label>
-                  </div>
-                  
-                  {isScreenShareSupported ? (
-                    <button
-                      className={`w-full px-4 py-2 text-sm rounded-md text-white ${
-                        isScreenRecording ? 'bg-[var(--scratch-red)]' : 'bg-[var(--scratch-green)]'
-                      }`}
-                      onClick={isScreenRecording ? stopScreenRecording : startScreenRecording}
-                      disabled={!isScreenShareSupported}
-                    >
-                      {isScreenRecording ? '停止屏幕录制' : '开始屏幕录制'}
-                    </button>
-                  ) : (
-                    <div className="text-[var(--scratch-red)] text-sm">
-                      您的浏览器不支持屏幕录制功能
-                    </div>
-                  )}
-                </div>
-
-                {/* 录制的文件 */}
-                {recordedBlob && (
-                  <div className="mt-4">
-                    <h4 className="text-sm font-medium text-gray-700 mb-2 dark:text-gray-300">录制的视频</h4>
-                    <button
-                      className="w-full px-4 py-2 text-sm bg-[var(--scratch-blue)] text-white rounded-md hover:bg-blue-600"
-                      onClick={downloadRecording}
-                    >
-                      下载视频
-                    </button>
-                    <video 
-                      className="mt-2 w-full rounded-md border dark:border-gray-700" 
-                      src={URL.createObjectURL(recordedBlob)} 
-                      controls
-                    />
+                
+                {isScreenShareSupported ? (
+                  <button
+                    className={`w-full px-4 py-2 text-sm rounded-md text-white ${
+                      isScreenRecording ? 'bg-[var(--scratch-red)]' : 'bg-[var(--scratch-green)]'
+                    }`}
+                    onClick={isScreenRecording ? stopScreenRecording : startScreenRecording}
+                    disabled={!isScreenShareSupported}
+                  >
+                    {isScreenRecording ? '停止屏幕录制' : '开始屏幕录制'}
+                  </button>
+                ) : (
+                  <div className="text-[var(--scratch-red)] text-sm">
+                    您的浏览器不支持屏幕录制功能
                   </div>
                 )}
               </div>
+
+              {/* 录制的文件 */}
+              {recordedBlob && (
+                <div className="mt-4">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2 dark:text-gray-300">录制的视频</h4>
+                  <button
+                    className="w-full px-4 py-2 text-sm bg-[var(--scratch-blue)] text-white rounded-md hover:bg-blue-600"
+                    onClick={downloadRecording}
+                  >
+                    下载视频
+                  </button>
+                  <video 
+                    className="mt-2 w-full rounded-md border dark:border-gray-700" 
+                    src={URL.createObjectURL(recordedBlob)} 
+                    controls
+                  />
+                </div>
+              )}
             </div>
 
             {/* 已记录的操作 */}
@@ -930,20 +969,11 @@ export default function RecordCoursePage() {
             )}
             
             {/* 编辑器容器 */}
-            <div className="flex-1 h-[600px] min-h-[600px] editor-container relative">
-              {/* Snap! 编辑器 */}
-              <iframe 
-                ref={snapIframeRef}
-                src="http://snap.berkeley.edu/snap.html"
-                className={`w-full h-full border-none ${activeEditor === 'snap' ? 'block' : 'hidden'}`}
-                title="Snap! 编辑器"
-              />
-              
-              {/* Scratch 编辑器 */}
+            <div className="flex-1 h-[500px] min-h-[500px] editor-container relative mx-auto w-2/3">
               <iframe 
                 ref={scratchIframeRef}
                 src="https://leetzeyew.github.io/scratch-editor"
-                className={`w-full h-full border-none ${activeEditor === 'scratch' ? 'block' : 'hidden'}`}
+                className="w-full h-full border-none"
                 title="Scratch 编辑器"
               />
             </div>

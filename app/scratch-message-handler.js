@@ -18,41 +18,78 @@ function initScratchListener() {
   
   try {
     // 监听Blockly工作区变化
-    // 注意：这里假设Scratch编辑器使用Blockly，需要根据实际情况调整
     if (window.Blockly && window.Blockly.getMainWorkspace()) {
       const workspace = window.Blockly.getMainWorkspace();
       
+      // 记录所有类型的操作
       workspace.addChangeListener((event) => {
-        // 只有在录制模式下才记录操作
         if (!isRecording) return;
         
-        // 记录积木移动操作
-        if (event.type === Blockly.Events.MOVE) {
-          const timestamp = (Date.now() - recordingStartTime) / 1000;
-          const blockId = event.blockId;
-          const block = workspace.getBlockById(blockId);
-          
-          if (block) {
-            const position = block.getRelativeToSurfaceXY();
-            
-            // 向父窗口发送消息
-            window.parent.postMessage({
-              type: 'userAction',
-              action: `移动积木 ${blockId} 到位置 (${position.x}, ${position.y})`,
-              details: {
+        const timestamp = (Date.now() - recordingStartTime) / 1000;
+        let operation = null;
+        
+        switch (event.type) {
+          case Blockly.Events.MOVE:
+            const block = workspace.getBlockById(event.blockId);
+            if (block) {
+              const position = block.getRelativeToSurfaceXY();
+              operation = {
                 type: 'move',
-                blockId,
+                blockId: event.blockId,
                 position: {x: position.x, y: position.y},
                 timestamp
-              }
-            }, '*');
+              };
+            }
+            break;
             
-            console.log(`记录了积木移动: ${blockId} 在 ${timestamp}秒`);
-          }
+          case Blockly.Events.CREATE:
+            operation = {
+              type: 'create',
+              blockId: event.blockId,
+              blockType: event.blockType,
+              timestamp
+            };
+            break;
+            
+          case Blockly.Events.DELETE:
+            operation = {
+              type: 'delete',
+              blockId: event.blockId,
+              timestamp
+            };
+            break;
+            
+          case Blockly.Events.CHANGE:
+            operation = {
+              type: 'change',
+              blockId: event.blockId,
+              field: event.fieldName,
+              oldValue: event.oldValue,
+              newValue: event.newValue,
+              timestamp
+            };
+            break;
+            
+          case Blockly.Events.FINISHED_LOADING:
+            operation = {
+              type: 'load',
+              timestamp
+            };
+            break;
         }
         
-        // 记录其他类型的操作
-        // 例如：创建积木、删除积木、变更属性等
+        if (operation) {
+          // 添加到本地记录
+          window.scratchOperations.push(operation);
+          
+          // 发送到父窗口
+          window.parent.postMessage({
+            type: 'userAction',
+            details: operation
+          }, '*');
+          
+          console.log(`记录了操作: ${operation.type} @ ${timestamp}秒`);
+        }
       });
       
       console.log('Blockly工作区监听器设置成功');
@@ -164,33 +201,77 @@ function executeCommand(command, code) {
   }
 }
 
+// 生成可重放的代码
+function generateReplayCode(operations) {
+  let code = '';
+  
+  operations.forEach(op => {
+    switch (op.type) {
+      case 'create':
+        code += `// 创建积木: ${op.blockType}\n`;
+        code += `createBlock('${op.blockType}', ${op.timestamp});\n`;
+        break;
+        
+      case 'move':
+        code += `// 移动积木到位置 (${op.position.x}, ${op.position.y})\n`;
+        code += `moveBlock('${op.blockId}', ${op.position.x}, ${op.position.y}, ${op.timestamp});\n`;
+        break;
+        
+      case 'change':
+        code += `// 修改积木属性: ${op.field} = ${op.newValue}\n`;
+        code += `changeBlock('${op.blockId}', '${op.field}', '${op.newValue}', ${op.timestamp});\n`;
+        break;
+        
+      case 'delete':
+        code += `// 删除积木\n`;
+        code += `deleteBlock('${op.blockId}', ${op.timestamp});\n`;
+        break;
+    }
+  });
+  
+  return code;
+}
+
+// 导出操作记录
+function exportOperations() {
+  const code = generateReplayCode(window.scratchOperations);
+  
+  // 创建下载链接
+  const blob = new Blob([code], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `scratch-operations-${new Date().toISOString()}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // 监听来自父窗口的消息
 window.addEventListener('message', (event) => {
-  // 确保消息来自父窗口
   if (event.source !== window.parent) return;
   
   console.log('收到父窗口消息:', event.data);
   
-  // 处理初始化消息
   if (event.data.type === 'init') {
     isRecording = !!event.data.isRecording;
     console.log(`初始化编辑器，录制模式: ${isRecording}`);
   }
   
-  // 处理开始录制消息
   if (event.data.type === 'recordingStarted') {
     isRecording = true;
     recordingStartTime = Date.now();
+    window.scratchOperations = []; // 清空之前的记录
     console.log('开始录制操作');
   }
   
-  // 处理停止录制消息
   if (event.data.type === 'recordingStopped') {
     isRecording = false;
     console.log('停止录制操作');
+    exportOperations(); // 导出操作记录
   }
   
-  // 处理命令执行
   if (event.data.type === 'command') {
     executeCommand(event.data.command, event.data.code);
   }
@@ -198,7 +279,6 @@ window.addEventListener('message', (event) => {
 
 // 页面加载完成后初始化
 window.addEventListener('load', () => {
-  // 等待Scratch编辑器加载完成
   setTimeout(() => {
     initScratchListener();
   }, 1000);
